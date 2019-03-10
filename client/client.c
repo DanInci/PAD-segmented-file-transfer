@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <string.h>
 
     // parinte: citeasca fiecare linie din servers.config, linie ce reprezinta adresa de conectare la un server
     //          interogheaza serverele si vede cate din ele sunt disponibile si se pune intr-o lista circulara
@@ -96,8 +97,46 @@ void downloadSegment(ReachedServer *s, int currentSegmentNo, const char *fileNam
  * Merges the partial files into a single file
  * Deletes partial files afterwards
  */
-void mergePartialFiles(int segmentsNo) {
 
+void mergePartialFiles(char *fileName,int segmentsNo) {
+    int i,n,k,ret;
+    FILE *finalFile =fopen(fileName,"a");
+    if(finalFile==NULL)
+    {
+        die("Shit");
+    }
+    char buff[4097], fname[100];
+    for(i=0;i<segmentsNo;i++)
+    {	
+	char segNo=i+'0';
+	strcpy(fname,fileName);
+        strcat(fileName,segNo);
+	FILE *pf=fopen(fname,"rb");
+        if(pf==NULL)
+        {
+            die("Shit");
+        }
+        while((n=fread(buff,sizeof(char),4096,pf)))
+        {
+            k=fwrite(buff,sizeof(char),n,finalFile);
+            if(!k)
+            {
+            die("Shit");
+            }
+        }
+        fclose(pf);
+        ret=remove(fname);
+	if(ret == 0) 
+	{
+      	    printf("File deleted successfully");
+   	} 
+	else 
+	{
+      	    printf("Error: unable to delete the file");
+   	}
+    }
+    fclose(finalFile);
+    return 0;
 }
 
 int main(int argv, char *argc[]) { // nume fisier, nr segmente
@@ -142,7 +181,7 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
         current = current->next;
     }
 
-    mergePartialFiles(segmentsNo);
+    mergePartialFiles(fileName,segmentsNo);
 
     cleanUp();
     return 0;
