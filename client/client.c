@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <math.h>
 
     // parinte: citeasca fiecare linie din servers.config, linie ce reprezinta adresa de conectare la un server
     //          interogheaza serverele si vede cate din ele sunt disponibile si se pune intr-o lista circulara
@@ -29,6 +31,7 @@ typedef struct _ReachedServer {
 } ReachedServer;
 
 int serversNo; // number of known servers;
+int newFileSize;
 char (*server_addrs)[MAX_ADDR_LENGTH]; // dynamic array of known servers from servers.config
 
 ReachedServer *servers; // pointer to a server that contains the file
@@ -80,7 +83,9 @@ int validateReachedServers(int segmentsNo) {
  * Something to find a proper distribution of bytes per segment
  */
 int calculateBytesPerSegment(int segmentsNo) {
-    return 0;
+	double segmentsSize=0;   
+	segmentsSize=ceil((double)servers->fileSize/segmentsNo);
+    	return segmentsSize;
 }
 
 /*
@@ -100,6 +105,7 @@ void downloadSegment(ReachedServer *s, int currentSegmentNo, const char *fileNam
 
 void mergePartialFiles(char *fileName,int segmentsNo) {
     int i,n,k,ret;
+    struct stat st;
     FILE *finalFile =fopen(fileName,"a");
     if(finalFile==NULL)
     {
@@ -128,13 +134,15 @@ void mergePartialFiles(char *fileName,int segmentsNo) {
         ret=remove(fname);
 	if(ret == 0) 
 	{
-      	    printf("File deleted successfully");
+      	    die("File deleted successfully");
    	} 
 	else 
 	{
-      	    printf("Error: unable to delete the file");
+      	    die("Error: unable to delete the file");
    	}
     }
+    stat(finalFile,&st);
+    newFileSize=st.st_size;
     fclose(finalFile);
     return 0;
 }
@@ -182,7 +190,14 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
     }
 
     mergePartialFiles(fileName,segmentsNo);
-
+    
+    if(servers->fileSize!=newFileSize)
+    {
+	die("Download error!");
+    }
+    else
+	die("Your file is downloaded!");
+    
     cleanUp();
     return 0;
 }
