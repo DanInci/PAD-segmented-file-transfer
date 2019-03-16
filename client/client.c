@@ -32,7 +32,7 @@ typedef struct _ReachedServer {
 
 int serversNo; // number of known servers;
 int newFileSize;
-char (*server_addrs)[MAX_ADDR_LENGTH]; // dynamic array of known servers from servers.config
+char *server_addrs[MAX_ADDR_LENGTH]; // dynamic array of known servers from servers.config
 
 ReachedServer *servers; // pointer to a server that contains the file
 
@@ -59,6 +59,17 @@ void die(const char *fmt, ...) {
  */
 void readServersConfig() { 
 
+int i=0;
+char line[50];
+FILE *file;
+file = fopen("servers.config", "r");
+while(fgets(line, sizeof(line), file)!=NULL) {
+    server_addrs[i]=malloc(sizeof(line));
+    strcpy(server_addrs[i],line);
+    i++;
+    }
+fclose(file);
+
 }
 
 /*
@@ -76,7 +87,25 @@ void interogateServer(const char *addr, const char *fileName) {
  * Checks if file size is bigger than given segment number
  */
 int validateReachedServers(int segmentsNo) {
-    return -1;
+     int headSize=0;
+     headSize=servers->fileSize;
+     ReachedServer *current=servers;
+     if(current==NULL)
+	return -1;
+     while(current != NULL)
+	{
+	 if(headSize!=current->fileSize)
+	 {			    
+	  return -2;
+	 }
+	 servers=current->next;
+        }
+     if(servers->fileSize<segmentsNo)
+	{	
+	 return -3;
+	}
+     return 0;
+
 }
 
 /*
@@ -144,7 +173,7 @@ void mergePartialFiles(char *fileName,int segmentsNo) {
     stat(finalFile,&st);
     newFileSize=st.st_size;
     fclose(finalFile);
-    return 0;
+    
 }
 
 int main(int argv, char *argc[]) { // nume fisier, nr segmente
@@ -170,7 +199,13 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
     if((err = validateReachedServers(segmentsNo)) < 0) {
         switch(err) { // switch case for different validation err codes
             case -1:
-                die("Bla bla bla");
+                die("There are no reached servers");
+                break;
+	    case -2:
+                die("Different file sizes on servers");
+                break;
+	    case -3:
+                die("File size is smaller that desired number of segments");
                 break;
         }
     } 
