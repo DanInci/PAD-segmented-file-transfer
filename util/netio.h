@@ -5,7 +5,7 @@
 #include <netdb.h>
 #include <unistd.h>
 
-int set_addr(struct sockaddr_in *addr, char *name, u_int32_t inaddr, short sin_port) {
+int set_addr(struct sockaddr_in *addr, const char *name, u_int32_t inaddr, short sin_port) {
     struct hostent *h;
 
     memset((void *) addr, 0, sizeof(*addr));
@@ -17,8 +17,8 @@ int set_addr(struct sockaddr_in *addr, char *name, u_int32_t inaddr, short sin_p
         }
         addr->sin_addr.s_addr = *(u_int32_t *) h->h_addr_list[0];
     } else {
-        addr->sin_addr.s_addr = htonl(inaddr);
+        addr->sin_addr.s_addr = htonl(inaddr);        
     }
-    addr->sin_port = htons(sin_port);
+    if (sin_port != -1) addr->sin_port = htons(sin_port);
     return 0;
 }

@@ -2,10 +2,13 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <math.h>
+#include <errno.h>
+
+#include "../util/io.h"
+#include "../util/netio.h"
 
     // parinte: citeasca fiecare linie din servers.config, linie ce reprezinta adresa de conectare la un server
     //          interogheaza serverele si vede cate din ele sunt disponibile si se pune intr-o lista circulara
@@ -21,26 +24,40 @@
     //          scrie continutul buffer-ului intr-un fisier partial (nume_fiser-nr_segment)
     //          inchide conexiunea
 
-#define MAX_ADDR_LENGTH 100
+#define MAX_SERVERS 100
+#define SERVERS_CONFIG "servers.config"
+#define SOCKET_BUFFER_SIZE 1024
+
+typedef struct _Server {
+    char *addr;
+    int port;
+} Server;
 
 typedef struct _ReachedServer {
-    struct _ReachedSever *next;
-    const char *addr;
-    const int socketFd;
-    const int fileSize;
+    const Server *info;
+    int socketFd;
+    int fileSize;
 } ReachedServer;
 
 int serversNo; // number of known servers;
-int newFileSize;
-char *server_addrs[MAX_ADDR_LENGTH]; // dynamic array of known servers from servers.config
+Server **servers; // dynamic array of known servers from servers.config
 
-ReachedServer *servers; // pointer to a server that contains the file
+int reachedServerNo; // number of reached servers;
+ReachedServer **reachedServers; // dynamic array of reached servers that contain the file
 
 /*
  * Clean ups -- e.g. memory deallocations
  */
 void cleanUp() {
-
+    int i = 0;
+    for(i=0; i<serversNo; i++) {
+        free(servers[i]->addr);
+        free(servers[i]);
+        if(i<reachedServerNo) {
+            close(reachedServers[i]->socketFd);
+            free(reachedServers[i]);
+        }
+    }
 }
 
 void die(const char *fmt, ...) {
@@ -54,31 +71,101 @@ void die(const char *fmt, ...) {
     exit(-1);
 }
 
+void addServer(char *line) {
+    if(!servers) {
+        servers = (Server **) malloc(sizeof(Server *));
+    }
+    else {
+        servers = (Server **) realloc(servers, (serversNo+1) * sizeof(Server *));
+    }
+    Server *s = (Server *) malloc(sizeof(Server));
+    char *colon = strchr(line, ':');
+    if(colon) {
+        int addrLen = colon-line;
+        s->addr = (char *) malloc((addrLen + 1) * sizeof(char));
+        strncpy(s->addr, line, addrLen);
+        s->addr[addrLen] = '\0';
+        s->port = atoi(colon+1);       
+    }
+    else {
+        s->addr = (char *) malloc((strlen(line) + 1) * sizeof(char));
+        s->port = -1;
+    }
+    servers[serversNo] = s;
+    serversNo++;
+}
+
+void addReachedServer(const Server *info, const int socketFd, const int fileSize) {
+    if(!reachedServers) {
+        reachedServers = (ReachedServer **) malloc(sizeof(ReachedServer *));
+    }
+    else {
+        reachedServers = (ReachedServer **) realloc(reachedServers, (reachedServerNo+1) * sizeof(ReachedServer *));
+    }
+
+    ReachedServer *s = (ReachedServer *) malloc(sizeof(ReachedServer));
+    s->info = info;
+    s->socketFd = socketFd;
+    s->fileSize = fileSize;
+
+    reachedServers[reachedServerNo] = s;
+    reachedServerNo++;
+}
+
 /*
  * Reads known server addresses from each line in servers.config
  */
-void readServersConfig() { 
-
-int i=0;
-char line[50];
-FILE *file;
-file = fopen("servers.config", "r");
-while(fgets(line, sizeof(line), file)!=NULL) {
-    server_addrs[i]=malloc(sizeof(line));
-    strcpy(server_addrs[i],line);
-    i++;
+void readServersConfig() {
+    char line[50];
+    char *end;
+    FILE *file;
+    file = fopen(SERVERS_CONFIG, "r");
+    if(!file) {
+        die("Failed to open %s\n", SERVERS_CONFIG);
     }
-fclose(file);
-
+    while(fgets(line, sizeof(line), file) != NULL && serversNo < MAX_SERVERS) {
+        if ((end = strchr(line, '\n'))) {
+            *end = '\0';
+        }
+        addServer(line);
+    }
+    fclose(file);
 }
 
 /*
  * Creates a socket connection to the server with the given addr and asks for the file
- * Adds successfull interogation responses to ReachedServers list
- * Concurrency problems might occur
+ * Adds successful interogation responses to ReachedServers list
  */
-void interogateServer(const char *addr, const char *fileName) {
+void interogateServer(const Server *s, const char *fileName) {
+    int sockFd;
+    char buffer[SOCKET_BUFFER_SIZE];
+    struct sockaddr_in localAddr, remoteAddr;
+    if((sockFd = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
+        die("Failed to create socket: errno %d", errno);
+    }
+    set_addr(&localAddr, NULL, INADDR_ANY, 0);
+    if(bind(sockFd, (struct sockaddr *) &localAddr, sizeof(localAddr)) < 0) {
+        die("Failed to bind socket: errno %d", errno);
+    }
+    set_addr(&remoteAddr, s->addr, 0, s->port);
+    if(connect(sockFd, (struct sockaddr *) &remoteAddr, sizeof(remoteAddr)) < 0) {
+        printf("Failed to connect to '%s:%d'\n", s->addr, s->port);
+    }
+    else {
+        sprintf(buffer, "CEI_FA_ASTA %s\n", fileName);
+        write(sockFd, buffer, strlen(buffer));
+        readLine(sockFd, buffer, SOCKET_BUFFER_SIZE);
 
+        char *result = strtok(buffer, " \r\n\t\0");
+        if(result && strcmp(result, "-1") == 0) {
+            printf("File '%s' is missing from '%s:%d'\n",fileName, s->addr, s->port);
+        }
+        else if (result) {
+            char *sizeStr = strtok(NULL, " \r\n\t\0");
+            printf("File '%s' was found on '%s:%d' with size %s\n", fileName, s->addr, s->port, sizeStr);
+            addReachedServer(s, sockFd, atoi(sizeStr));
+        }
+    }
 }
 
 /*
@@ -87,25 +174,21 @@ void interogateServer(const char *addr, const char *fileName) {
  * Checks if file size is bigger than given segment number
  */
 int validateReachedServers(int segmentsNo) {
-     int headSize=0;
-     headSize=servers->fileSize;
-     ReachedServer *current=servers;
-     if(current==NULL)
-	return -1;
-     while(current != NULL)
-	{
-	 if(headSize!=current->fileSize)
-	 {			    
-	  return -2;
-	 }
-	 servers=current->next;
-        }
-     if(servers->fileSize<segmentsNo)
-	{	
-	 return -3;
-	}
-     return 0;
+    int i, headSize=0;
+    
+    if(reachedServerNo == 0) return -1;
 
+    headSize=reachedServers[0]->fileSize;
+    
+    for(i=1; i<reachedServerNo; i++) {
+        if(headSize != reachedServers[0]->fileSize) {			    
+	        return -2;
+        }
+    }
+    
+    if(headSize<segmentsNo) return -3;
+
+    return 0;
 }
 
 /*
@@ -113,8 +196,8 @@ int validateReachedServers(int segmentsNo) {
  */
 int calculateBytesPerSegment(int segmentsNo) {
 	double segmentsSize=0;   
-	segmentsSize=ceil((double)servers->fileSize/segmentsNo);
-    	return segmentsSize;
+	segmentsSize=floor((double)reachedServers[0]->fileSize/segmentsNo);
+    return segmentsSize;
 }
 
 /*
@@ -123,62 +206,96 @@ int calculateBytesPerSegment(int segmentsNo) {
  * Writes the contents of the buffer into a partial file
  * Closes socket connection
  */
-void downloadSegment(ReachedServer *s, int currentSegmentNo, const char *fileName, int bytesPerSegment) {
+void downloadSegment(ReachedServer *s, const char *fileName, const int currentSegmentNo, const int la, const int lb) {
+    FILE *g;
+    char *pfName;
+    char buffer[SOCKET_BUFFER_SIZE];
+    int n, k;
 
+    sprintf(buffer, "%s%d", fileName, currentSegmentNo);
+    pfName = (char *) malloc((strlen(buffer) + 1) * sizeof(char));
+    sprintf(pfName, "%s%d", fileName, currentSegmentNo);
+    g = fopen(pfName, "wb");
+    if(!g) {
+        printf("Failed to write partial file '%s'\n", pfName);
+        free(pfName);
+        exit(-1);
+    }
+
+    sprintf(buffer, "DAMI %s %d %d\n", fileName, la, lb);
+    write(s->socketFd, buffer, strlen(buffer));
+    do {
+        if((n = readUntilEOF(s->socketFd, &buffer, SOCKET_BUFFER_SIZE)) < 0) {
+            printf("Failed to read bytes from '%s:%d'\n", s->info->addr, s->info->port);
+            fclose(g);
+            free(pfName);
+            exit(-1);
+        } 
+        if((k=fwrite(buffer, 1, n, g)) < n) {
+            printf("Failed to write all the bytes received from '%s:%d' to partial file '%s'\n", s->info->addr, s->info->port, pfName);
+            fclose(g);
+            free(pfName);
+            exit(-1);
+        }
+    } while(n == SOCKET_BUFFER_SIZE);
+
+    fclose(g);
+    free(pfName);
+}
+
+char *getPartialFileName(char *fileName, int segmentNo) {
+    char *partialFileName = (char *) malloc((strlen(fileName) + segmentNo/10 + 2) * sizeof(char));
+    sprintf(partialFileName, "%s%d", fileName, segmentNo);
+    return partialFileName;
 }
 
 /*
  * Merges the partial files into a single file
  * Deletes partial files afterwards
+ * Returns the final file size
  */
 
 void mergePartialFiles(char *fileName,int segmentsNo) {
-    int i,n,k,ret;
-    struct stat st;
-    FILE *finalFile =fopen(fileName,"a");
-    if(finalFile==NULL)
-    {
-        die("Shit");
+    char buff[SOCKET_BUFFER_SIZE];
+    char *fname;
+    int i, n, k, ret;
+    FILE *finalFile = fopen(fileName, "wb");
+    if(!finalFile) {
+        die("Failed to create final file '%s'", finalFile);
     }
-    char buff[4097], fname[100];
-    for(i=0;i<segmentsNo;i++)
-    {	
-	char segNo=i+'0';
-	strcpy(fname,fileName);
-        strcat(fileName,segNo);
-	FILE *pf=fopen(fname,"rb");
-        if(pf==NULL)
-        {
-            die("Shit");
+    for(i=0;i<segmentsNo;i++) {	
+        fname = getPartialFileName(fileName, i);
+	    FILE *pf=fopen(fname, "rb");
+        if(!pf) {
+            die("Failed to open partial file %s", fname);
         }
-        while((n=fread(buff,sizeof(char),4096,pf)))
-        {
-            k=fwrite(buff,sizeof(char),n,finalFile);
-            if(!k)
-            {
-            die("Shit");
+        do {
+            n=fread(buff, 1, SOCKET_BUFFER_SIZE, pf);
+            k=fwrite(buff, 1, n, finalFile);
+            if (k<n) {
+                die("Failed to write all the bytes from partial file '%s' to the final file", fname);
             }
-        }
+        } while(n == SOCKET_BUFFER_SIZE);
         fclose(pf);
         ret=remove(fname);
-	if(ret == 0) 
-	{
-      	    die("File deleted successfully");
-   	} 
-	else 
-	{
-      	    die("Error: unable to delete the file");
-   	}
+	    if(ret < 0) {
+      	    die("Failed to delete partial file %s", fname);
+   	    }
+        free(fname);
     }
-    stat(finalFile,&st);
-    newFileSize=st.st_size;
     fclose(finalFile);
-    
+}
+
+int compareFileSize(char *fileName, int size) {
+    struct stat st;
+    stat(fileName, &st);
+    return st.st_size -  size;
 }
 
 int main(int argv, char *argc[]) { // nume fisier, nr segmente
-    int i, err, segmentsNo;
-    char *fileName, *ptr;
+    ReachedServer *s;
+    int i, err, segmentsNo, bytesPerSegment, la, lb;
+    char *fileName;
 
     if(argv < 3) {
         die("Usage: %s <file_name> <segments_no>", argc[0]);
@@ -189,11 +306,8 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
     
     readServersConfig();
 
-    for(i=0, ptr=server_addrs; i<serversNo; i++, ptr++) {
-        if(fork() == 0){
-            interogateServer(ptr, fileName);
-            exit(0);
-        }
+    for(i=0; i<serversNo; i++) {
+        interogateServer(servers[i], fileName);
     }
 
     if((err = validateReachedServers(segmentsNo)) < 0) {
@@ -201,38 +315,40 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
             case -1:
                 die("There are no reached servers");
                 break;
-	    case -2:
+	        case -2:
                 die("Different file sizes on servers");
                 break;
-	    case -3:
+	        case -3:
                 die("File size is smaller that desired number of segments");
                 break;
         }
     } 
+    printf("%d out of %d servers were reached for file '%s'\n", reachedServerNo, serversNo, fileName);
     
-    int bytesPerSegment = calculateBytesPerSegment(segmentsNo);
+    bytesPerSegment = calculateBytesPerSegment(segmentsNo);
 
-    ReachedServer *current;
-    for(i=0;i<segmentsNo;i++) {
-        if(current == NULL) {
-            current = servers;
-        }
+    for (i=0; i<segmentsNo; i++) {
         if(fork() == 0){
-            downloadSegment(current, i, fileName, bytesPerSegment);
+            s=reachedServers[i % reachedServerNo];
+            la = bytesPerSegment*i;
+            lb = i == segmentsNo-1 ? s->fileSize : bytesPerSegment*i + bytesPerSegment;
+            downloadSegment(reachedServers[i % reachedServerNo], fileName, i, la, lb);
             exit(0);
         }
-        current = current->next;
+        // downloadSegment(reachedServers[i % reachedServerNo], fileName, i, la, lb);
     }
 
-    mergePartialFiles(fileName,segmentsNo);
-    
-    if(servers->fileSize!=newFileSize)
-    {
-	die("Download error!");
+    for(i=0; i<segmentsNo; i++) {
+        wait(NULL);
     }
-    else
-	die("Your file is downloaded!");
+
+    mergePartialFiles(fileName, segmentsNo);
     
+    if (compareFileSize(fileName, reachedServers[0]->fileSize) != 0) {
+	    die("Failed to verify download!");
+    }
+    
+    printf("Download successful!\n");
     cleanUp();
     return 0;
 }

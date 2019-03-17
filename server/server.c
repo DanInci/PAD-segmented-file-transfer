@@ -11,7 +11,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#include "util/netio.h"
+#include "../util/netio.h"
+#include "../util/io.h"
 
 #define DEFAULT_PORT 5432
 #define DEFAULT_FILES_FOLDER "./files"
@@ -96,45 +97,16 @@ void init(char *dirName) {
     closedir(filesDir);
 }
 
-int readLine(int fd, void *buffer, int n) {
-    int totalRead = 0, chRead;
-    char *buf;
-    char ch;
-
-    buf = buffer;
-    for(;;) {
-        chRead = read(fd, &ch, 1);
-        if(chRead > 0) {
-            if(totalRead < n-1) {
-                if(ch == '\n') {
-                    break;
-                }
-                totalRead++;
-                *buf++ = ch;
-            }
-        } 
-        else if (chRead == 0) {
-            if(totalRead == 0) {
-                return 0;
-            }
-            else {
-                break;
-            }
-        }
-        else {
-            return -1;
-        }
-    }
-
-    *buf = '\0';
-    return totalRead;
-}
-
 ServedFile *findByPath(const char *path) {
+    char *p;
     if(!path) return NULL;
     
     ServedFile *q = files;
-    while(q && (strcmp(q->path, path) != 0 && (path[0] != '/' && strcmp(++q->path, path) != 0))) {
+    while(q) {
+        p=q->path;
+        if(strcmp(q->path, path) != 0 || (path[0] != '/' && strcmp(p, path) != 0)) {
+            break;
+        }
         q = q->nextFile;
     }
     return q;
@@ -172,10 +144,11 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
                     if (valueFrom && valueTo) { // Command format is valid
                         from = atol(valueFrom);
                         to = atol(valueTo);
-                        if(from>=0 && to>0 && from<to && (unsigned)to <= q->size) { // Requested bytes are valid     
-                            f=fopen(q->path, "rb");
+                        if(from>=0 && to>0 && from<to && (unsigned)to <= q->size) { // Requested bytes are valid
+                            sprintf(buffer, "%s%s", filesDirectory, q->path);     
+                            f=fopen(buffer, "rb");
                             if(!f) {
-                                printf("Failed to open file for download: %s\n", q->path);
+                                printf("Failed to open file for download: %s\n", buffer);
                                 break;
                             }
                             fseek(f, from, SEEK_SET);
@@ -187,8 +160,7 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
                                 current += howMany;
                             }
                             fclose(f);
-                            sprintf(buffer, "\n");
-                            write(socketfd, buffer, strlen(buffer));
+                            write(socketfd, "\0", sizeof(char));
                         }
                         else {
                             sprintf(buffer, "%d\n", -3);
