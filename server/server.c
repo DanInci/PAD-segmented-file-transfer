@@ -19,11 +19,11 @@
 
 typedef struct _ServedFile {
     struct _ServedFile *nextFile;
-    const char *path;
-    const char *name;
+    char *path;
     unsigned long int size;
 } ServedFile;
 
+char *filesDirectory;
 ServedFile *files; // list of files 
 ServedFile *last;
 
@@ -37,11 +37,22 @@ void die(const char *fmt, ...) {
     exit(-1);
 }
 
-void addServedFile(char *filePath, char *fileName, unsigned long size) {
+void cleanUp() {
+    ServedFile *q, *aux;
+    q=files;
+    while(q) {
+        aux=q;
+        q=q->nextFile;
+        free(aux->path);
+        free(aux);
+    }
+    free(filesDirectory);
+}
+
+void addServedFile(char *filePath, unsigned long size) {
     ServedFile *next = (ServedFile *)malloc(sizeof(ServedFile));
     next->nextFile = NULL;
     next->path=filePath;
-    next->name=fileName;
     next->size=size;
     if (last) {
         last->nextFile=next;
@@ -53,24 +64,33 @@ void addServedFile(char *filePath, char *fileName, unsigned long size) {
     }
 }
 
-void init(const char *filesDirName) {
+void init(char *dirName) {
     DIR *filesDir;
     struct dirent *entry;
     struct stat fileStat;
-    char *filePath, *fileName;
+    int filesDirectoryLength = strlen(filesDirectory);
+    char *buffer = (char *) malloc((filesDirectoryLength + strlen(dirName) + 35) * sizeof(char));
 
-    filesDir = opendir(filesDirName);
+    sprintf(buffer, "%s%s", filesDirectory, dirName);
+    filesDir = opendir(buffer);
     if(!filesDir) {
-        die("Failed to open files directory: %s", filesDirName);
+        die("Failed to open directory: %s", buffer);
     }
     while((entry = readdir(filesDir)) != NULL) {
-        filePath = (char *) malloc((strlen(filesDirName) + strlen(entry->d_name) + 2) * sizeof(char));
-        fileName = (char *) malloc((strlen(entry->d_name) +1) * sizeof(char));
-        sprintf(filePath, "%s/%s", filesDirName, entry->d_name);
-        sprintf(fileName, "%s", entry->d_name);
-        stat(filePath, &fileStat);
-        if(S_ISREG(fileStat.st_mode)) {
-            addServedFile(filePath, fileName, fileStat.st_size);
+        if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        sprintf(buffer, "%s%s/%s", filesDirectory, dirName, entry->d_name);
+        stat(buffer, &fileStat);
+        buffer = buffer + filesDirectoryLength;
+        if(S_ISDIR(fileStat.st_mode)) {
+            init(buffer);
+        }
+        else if(S_ISREG(fileStat.st_mode)) {
+            char *filePath = (char *) malloc((strlen(buffer) + 1) * sizeof(char));
+            strcpy(filePath, buffer);
+            addServedFile(filePath, fileStat.st_size);
         }
     }
     closedir(filesDir);
@@ -110,11 +130,11 @@ int readLine(int fd, void *buffer, int n) {
     return totalRead;
 }
 
-ServedFile *findByName(const char *name) {
-    if(!name) return NULL;
-
+ServedFile *findByPath(const char *path) {
+    if(!path) return NULL;
+    
     ServedFile *q = files;
-    while(q && strcmp(q->name, name) != 0) {
+    while(q && (strcmp(q->path, path) != 0 && (path[0] != '/' && strcmp(++q->path, path) != 0))) {
         q = q->nextFile;
     }
     return q;
@@ -134,7 +154,7 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
             command = strtok(buffer, " \n\r\t");
             if(command && strcmp(command, "CEI_FA_ASTA") == 0) {
                 fileName = strtok(NULL, " \n\r\t");
-                q=findByName(fileName);
+                q=findByPath(fileName);
                 if(q) {
                     sprintf(buffer, "%s %lu\n", fileName, q->size);
                 }
@@ -145,7 +165,7 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
             }
             else if(command && strcmp(command, "DAMI") == 0) {
                 fileName = strtok(NULL, " \n\r\t");
-                q=findByName(fileName);
+                q=findByPath(fileName);
                 if(q) { // File exists
                     valueFrom = strtok(NULL, " \n\r\t");
                     valueTo = strtok(NULL, " \n\r\t");
@@ -195,18 +215,18 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
             break;
         }
     }
+    close(socketfd);
 }
 
 int main(int argc, char *argv[]) {
     int port, sockfd, newsockfd, reuseaddr = 1;
-    char *filesdir;
     struct sockaddr_in server_addr, remote_addr;
     socklen_t rlen;
 
     port = argc > 1 ? atoi(argv[1]) : DEFAULT_PORT;
-    filesdir = argc > 2 ? argv[2] : DEFAULT_FILES_FOLDER;
+    filesDirectory = argc > 2 ? argv[2] : DEFAULT_FILES_FOLDER;
 
-    init(filesdir);
+    init("");
 
     if ((sockfd=socket(PF_INET, SOCK_STREAM, 0)) < 0)
     { 
@@ -239,5 +259,7 @@ int main(int argc, char *argv[]) {
         // process(newsockfd, remote_addr, rlen);
         close(newsockfd);
     }
+
+    cleanUp();
     return 0;
 }
