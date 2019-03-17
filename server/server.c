@@ -135,7 +135,12 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
             if(command && strcmp(command, "CEI_FA_ASTA") == 0) {
                 fileName = strtok(NULL, " \n\r\t");
                 q=findByName(fileName);
-                sprintf(buffer, "%s %lu\n", fileName, q ? q->size : -1);
+                if(q) {
+                    sprintf(buffer, "%s %lu\n", fileName, q->size);
+                }
+                else {
+                    sprintf(buffer, "%d\n", -1);
+                }
                 write(socketfd, buffer, strlen(buffer));
             }
             else if(command && strcmp(command, "DAMI") == 0) {
