@@ -21,7 +21,7 @@
 typedef struct _ServedFile {
     struct _ServedFile *nextFile;
     char *path;
-    unsigned long int size;
+    unsigned long size;
 } ServedFile;
 
 char *filesDirectory;
@@ -104,7 +104,7 @@ ServedFile *findByPath(const char *path) {
     ServedFile *q = files;
     while(q) {
         p=q->path;
-        if(strcmp(q->path, path) != 0 || (path[0] != '/' && strcmp(p, path) != 0)) {
+        if(strcmp(q->path, path) == 0 || strcmp(++p, path) == 0) {
             break;
         }
         q = q->nextFile;
@@ -118,8 +118,8 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
     FILE *f;
     char buffer[SOCKET_BUFFER_SIZE];
     char *command, *fileName, *valueFrom, *valueTo;
-    long int from, to, current;
-    int n, howMany;
+    unsigned long from, to, current, howMany;
+    int n;
     for(;;) {
         n = readLine(socketfd, &buffer, SOCKET_BUFFER_SIZE);
         if (n > 0) {
@@ -144,7 +144,7 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
                     if (valueFrom && valueTo) { // Command format is valid
                         from = atol(valueFrom);
                         to = atol(valueTo);
-                        if(from>=0 && to>0 && from<to && (unsigned)to <= q->size) { // Requested bytes are valid
+                        if(from>=0 && to>0 && from<to && to <= q->size) { // Requested bytes are valid
                             sprintf(buffer, "%s%s", filesDirectory, q->path);     
                             f=fopen(buffer, "rb");
                             if(!f) {
@@ -155,12 +155,18 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
                             current=from;
                             while(current < to) {
                                 howMany = to-current > SOCKET_BUFFER_SIZE ? SOCKET_BUFFER_SIZE : to-current;
+                                printf("enter read\n");
                                 howMany = fread(buffer, 1, howMany, f);
+                                printf("exit read\n");
+                                printf("enter write\n");
                                 write(socketfd, buffer, howMany);
+                                printf("exit write\n");
                                 current += howMany;
+                                printf("%lu / %lu \n", current, to);
                             }
                             fclose(f);
                             write(socketfd, "\0", sizeof(char));
+                            printf("Served '%s' [%lu, %lu]\n", fileName, from, to);
                         }
                         else {
                             sprintf(buffer, "%d\n", -3);
@@ -184,6 +190,9 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
         }
         else if(n < 0) {
             printf("Socket read error\n");
+            break;
+        }
+        else {
             break;
         }
     }
