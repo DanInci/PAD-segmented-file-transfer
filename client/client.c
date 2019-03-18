@@ -36,7 +36,7 @@ typedef struct _Server {
 typedef struct _ReachedServer {
     const Server *info;
     int socketFd;
-    int fileSize;
+    unsigned long fileSize;
 } ReachedServer;
 
 int serversNo; // number of known servers;
@@ -95,7 +95,7 @@ void addServer(char *line) {
     serversNo++;
 }
 
-void addReachedServer(const Server *info, const int socketFd, const int fileSize) {
+void addReachedServer(const Server *info, const int socketFd, const unsigned long fileSize) {
     if(!reachedServers) {
         reachedServers = (ReachedServer **) malloc(sizeof(ReachedServer *));
     }
@@ -107,6 +107,7 @@ void addReachedServer(const Server *info, const int socketFd, const int fileSize
     s->info = info;
     s->socketFd = socketFd;
     s->fileSize = fileSize;
+    //printf("%lu",s->fileSize);
 
     reachedServers[reachedServerNo] = s;
     reachedServerNo++;
@@ -163,7 +164,7 @@ void interogateServer(const Server *s, const char *fileName) {
         else if (result) {
             char *sizeStr = strtok(NULL, " \r\n\t\0");
             printf("File '%s' was found on '%s:%d' with size %s\n", fileName, s->addr, s->port, sizeStr);
-            addReachedServer(s, sockFd, atoi(sizeStr));
+            addReachedServer(s, sockFd, atol(sizeStr));
         }
     }
 }
@@ -174,14 +175,16 @@ void interogateServer(const Server *s, const char *fileName) {
  * Checks if file size is bigger than given segment number
  */
 int validateReachedServers(int segmentsNo) {
-    int i, headSize=0;
+    int i;
+    unsigned long headSize=0;
     
     if(reachedServerNo == 0) return -1;
 
     headSize=reachedServers[0]->fileSize;
+    printf("%lu\n",reachedServers[0]->fileSize);
     
     for(i=1; i<reachedServerNo; i++) {
-        if(headSize != reachedServers[0]->fileSize) {			    
+        if(headSize != reachedServers[i]->fileSize) {			    
 	        return -2;
         }
     }
@@ -194,10 +197,8 @@ int validateReachedServers(int segmentsNo) {
 /*
  * Something to find a proper distribution of bytes per segment
  */
-int calculateBytesPerSegment(int segmentsNo) {
-	double segmentsSize=0;   
-	segmentsSize=floor((double)reachedServers[0]->fileSize/segmentsNo);
-    return segmentsSize;
+unsigned long calculateBytesPerSegment(int segmentsNo) {
+	return reachedServers[0]->fileSize/segmentsNo;
 }
 
 /*
@@ -206,7 +207,7 @@ int calculateBytesPerSegment(int segmentsNo) {
  * Writes the contents of the buffer into a partial file
  * Closes socket connection
  */
-void downloadSegment(ReachedServer *s, const char *fileName, const int currentSegmentNo, const int la, const int lb) {
+void downloadSegment(ReachedServer *s, const char *fileName, const int currentSegmentNo, unsigned long la, unsigned long lb) {
     FILE *g;
     char *pfName;
     char buffer[SOCKET_BUFFER_SIZE];
@@ -222,7 +223,7 @@ void downloadSegment(ReachedServer *s, const char *fileName, const int currentSe
         exit(-1);
     }
 
-    sprintf(buffer, "DAMI %s %d %d\n", fileName, la, lb);
+    sprintf(buffer, "DAMI %s %lu %lu\n", fileName, la, lb);
     write(s->socketFd, buffer, strlen(buffer));
     do {
         if((n = readUntilEOF(s->socketFd, &buffer, SOCKET_BUFFER_SIZE)) < 0) {
@@ -237,9 +238,11 @@ void downloadSegment(ReachedServer *s, const char *fileName, const int currentSe
             free(pfName);
             exit(-1);
         }
-    } while(n == SOCKET_BUFFER_SIZE);
+	la+=n;
+    } while(la < lb);
 
     fclose(g);
+    //printf("%lu - %lu || %d\n",la,lb,currentSegmentNo);
     free(pfName);
 }
 
@@ -286,15 +289,17 @@ void mergePartialFiles(char *fileName,int segmentsNo) {
     fclose(finalFile);
 }
 
-int compareFileSize(char *fileName, int size) {
+int compareFileSize(char *fileName, unsigned long size) {
     struct stat st;
     stat(fileName, &st);
+    
     return st.st_size -  size;
 }
 
 int main(int argv, char *argc[]) { // nume fisier, nr segmente
     ReachedServer *s;
-    int i, err, segmentsNo, bytesPerSegment, la, lb;
+    int  err, segmentsNo;
+    unsigned long bytesPerSegment, la, lb,i;
     char *fileName;
 
     if(argv < 3) {
@@ -326,12 +331,14 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
     printf("%d out of %d servers were reached for file '%s'\n", reachedServerNo, serversNo, fileName);
     
     bytesPerSegment = calculateBytesPerSegment(segmentsNo);
+    printf("%lu   bps\n\n",bytesPerSegment);
 
     for (i=0; i<segmentsNo; i++) {
         if(fork() == 0){
             s=reachedServers[i % reachedServerNo];
             la = bytesPerSegment*i;
             lb = i == segmentsNo-1 ? s->fileSize : bytesPerSegment*i + bytesPerSegment;
+	    printf("%lu   fuck   %lu\n",la,lb);
             downloadSegment(reachedServers[i % reachedServerNo], fileName, i, la, lb);
             exit(0);
         }
