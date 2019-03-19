@@ -146,7 +146,7 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
                         to = atol(valueTo);
                         if(from>=0 && to>0 && from<to && to <= q->size) { // Requested bytes are valid
                             sprintf(buffer, "%s%s", filesDirectory, q->path);     
-                            f=fopen(buffer, "rb");
+                            f=fopen(buffer, "rb+");
                             if(!f) {
                                 printf("Failed to open file for download: %s\n", buffer);
                                 break;

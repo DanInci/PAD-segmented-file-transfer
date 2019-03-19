@@ -109,7 +109,6 @@ void addReachedServer(const Server *info, const int socketFd, const unsigned lon
     s->info = info;
     s->socketFd = socketFd;
     s->fileSize = fileSize;
-    //printf("%lu",s->fileSize);
 
     reachedServers[reachedServerNo] = s;
     reachedServerNo++;
@@ -135,13 +134,8 @@ void readServersConfig() {
     fclose(file);
 }
 
-/*
- * Creates a socket connection to the server with the given addr and asks for the file
- * Adds successful interogation responses to ReachedServers list
- */
-void interogateServer(const Server *s, const char *fileName) {
+int openNewSocket(char *addr, int port) {
     int sockFd;
-    char buffer[SOCKET_BUFFER_SIZE];
     struct sockaddr_in localAddr, remoteAddr;
     if((sockFd = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
         die("Failed to create socket: errno %d", errno);
@@ -150,11 +144,23 @@ void interogateServer(const Server *s, const char *fileName) {
     if(bind(sockFd, (struct sockaddr *) &localAddr, sizeof(localAddr)) < 0) {
         die("Failed to bind socket: errno %d", errno);
     }
-    set_addr(&remoteAddr, s->addr, 0, s->port);
+    set_addr(&remoteAddr, addr, 0, port);
     if(connect(sockFd, (struct sockaddr *) &remoteAddr, sizeof(remoteAddr)) < 0) {
-        printf("Failed to connect to '%s:%d'\n", s->addr, s->port);
+        printf("Failed to connect to '%s:%d'\n", addr, port);
+        return -1;
     }
-    else {
+    return sockFd;
+}
+
+/*
+ * Creates a socket connection to the server with the given addr and asks for the file
+ * Adds successful interogation responses to ReachedServers list
+ */
+void interogateServer(const Server *s, const char *fileName) {
+    char buffer[SOCKET_BUFFER_SIZE];
+    int sockFd = openNewSocket(s->addr, s->port);
+    
+    if(sockFd != -1) {
         sprintf(buffer, "CEI_FA_ASTA %s\n", fileName);
         write(sockFd, buffer, strlen(buffer));
         readLine(sockFd, buffer, SOCKET_BUFFER_SIZE);
@@ -235,17 +241,19 @@ void downloadSegment(ReachedServer *s, const char *fileName, const int currentSe
                 printf("Failed to read bytes from '%s:%d'\n", s->info->addr, s->info->port);
                 fclose(g);
                 free(pfName);
+                close(s->socketFd);
                 exit(-1);
         }
         if(fwrite(buffer, 1, n, g) < n) {
             printf("Failed to write all the bytes received from '%s:%d' to partial file '%s'\n", s->info->addr, s->info->port, pfName);
             fclose(g);
             free(pfName);
+            close(s->socketFd);
             exit(-1);
         }
 	    segmentSize -= n;
     }
-
+    close(s->socketFd);
     fclose(g);
     free(pfName);
 }
@@ -299,7 +307,7 @@ void on_progress (progress_data_t *data) {
 
 int main(int argv, char *argc[]) { // nume fisier, nr segmente
     ReachedServer *s;
-    int  err, segmentsNo, i;
+    int  err, segmentsNo, i, secondPass=0;
     unsigned long bytesPerSegment, segmentSize, la, lb;
     char *fileName;
     progress_t *progress;
@@ -336,6 +344,11 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
 
     for (i=0; i<segmentsNo; i++) {
         s=reachedServers[i % reachedServerNo];
+        if(secondPass == 1) {
+            s->socketFd = openNewSocket(s->info->addr, s->info->port);
+        } else if(i % reachedServerNo) {
+            secondPass = 1;
+        }
         la = bytesPerSegment*i;
         lb = i == segmentsNo-1 ? s->fileSize : bytesPerSegment*i + bytesPerSegment;
         segmentSize = i == segmentsNo-1 ? s->fileSize-la : bytesPerSegment;

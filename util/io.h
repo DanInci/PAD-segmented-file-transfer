@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 int readLine(int fd, void *buffer, int n) {
     int totalRead = 0, chRead;
