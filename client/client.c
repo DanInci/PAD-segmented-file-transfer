@@ -6,9 +6,11 @@
 #include <sys/stat.h>
 #include <math.h>
 #include <errno.h>
+#include <sys/socket.h>
 
 #include "../util/io.h"
 #include "../util/netio.h"
+#include "../util/progress.h"
 
     // parinte: citeasca fiecare linie din servers.config, linie ce reprezinta adresa de conectare la un server
     //          interogheaza serverele si vede cate din ele sunt disponibile si se pune intr-o lista circulara
@@ -25,7 +27,7 @@
     //          inchide conexiunea
 
 #define MAX_SERVERS 100
-#define SERVERS_CONFIG "servers.config"
+#define SERVERS_CONFIG "./servers.config"
 #define SOCKET_BUFFER_SIZE 1024
 
 typedef struct _Server {
@@ -181,7 +183,6 @@ int validateReachedServers(int segmentsNo) {
     if(reachedServerNo == 0) return -1;
 
     headSize=reachedServers[0]->fileSize;
-    printf("%lu\n",reachedServers[0]->fileSize);
     
     for(i=1; i<reachedServerNo; i++) {
         if(headSize != reachedServers[i]->fileSize) {			    
@@ -201,21 +202,25 @@ unsigned long calculateBytesPerSegment(int segmentsNo) {
 	return reachedServers[0]->fileSize/segmentsNo;
 }
 
+char *getPartialFileName(int segmentNo) {
+    char *partialFileName = (char *) malloc(20 * sizeof(char));
+    sprintf(partialFileName, "partial%d", segmentNo);
+    return partialFileName;
+}
+
 /*
  * Uses the existing socket from ReachedServer structure or creates a new one
  * Requests the file segment and reads it into a buffer
  * Writes the contents of the buffer into a partial file
  * Closes socket connection
  */
-void downloadSegment(ReachedServer *s, const char *fileName, const int currentSegmentNo, unsigned long la, unsigned long lb) {
+void downloadSegment(ReachedServer *s, const char *fileName, const int currentSegmentNo, unsigned long segmentSize, const unsigned long la, const unsigned long lb) {
     FILE *g;
     char *pfName;
     char buffer[SOCKET_BUFFER_SIZE];
-    int n, k;
+    int n;
 
-    sprintf(buffer, "%s%d", fileName, currentSegmentNo);
-    pfName = (char *) malloc((strlen(buffer) + 1) * sizeof(char));
-    sprintf(pfName, "%s%d", fileName, currentSegmentNo);
+    pfName = getPartialFileName(currentSegmentNo);
     g = fopen(pfName, "wb");
     if(!g) {
         printf("Failed to write partial file '%s'\n", pfName);
@@ -225,57 +230,50 @@ void downloadSegment(ReachedServer *s, const char *fileName, const int currentSe
 
     sprintf(buffer, "DAMI %s %lu %lu\n", fileName, la, lb);
     write(s->socketFd, buffer, strlen(buffer));
-    do {
-        if((n = readUntilEOF(s->socketFd, &buffer, SOCKET_BUFFER_SIZE)) < 0) {
-            printf("Failed to read bytes from '%s:%d'\n", s->info->addr, s->info->port);
-            fclose(g);
-            free(pfName);
-            exit(-1);
-        } 
-        if((k=fwrite(buffer, 1, n, g)) < n) {
+    while(segmentSize>0) {
+        if((n = read(s->socketFd, &buffer, segmentSize < SOCKET_BUFFER_SIZE ? segmentSize : SOCKET_BUFFER_SIZE)) < 0) {
+                printf("Failed to read bytes from '%s:%d'\n", s->info->addr, s->info->port);
+                fclose(g);
+                free(pfName);
+                exit(-1);
+        }
+        if(fwrite(buffer, 1, n, g) < n) {
             printf("Failed to write all the bytes received from '%s:%d' to partial file '%s'\n", s->info->addr, s->info->port, pfName);
             fclose(g);
             free(pfName);
             exit(-1);
         }
-	la+=n;
-    } while(la < lb);
+	    segmentSize -= n;
+    }
 
     fclose(g);
-    //printf("%lu - %lu || %d\n",la,lb,currentSegmentNo);
     free(pfName);
-}
-
-char *getPartialFileName(char *fileName, int segmentNo) {
-    char *partialFileName = (char *) malloc((strlen(fileName) + segmentNo/10 + 2) * sizeof(char));
-    sprintf(partialFileName, "%s%d", fileName, segmentNo);
-    return partialFileName;
 }
 
 /*
  * Merges the partial files into a single file
  * Deletes partial files afterwards
- * Returns the final file size
  */
 
-void mergePartialFiles(char *fileName,int segmentsNo) {
+void mergePartialFiles(char *fileName, int segmentsNo) {
     char buff[SOCKET_BUFFER_SIZE];
     char *fname;
-    int i, n, k, ret;
+    int i, n, ret;
     FILE *finalFile = fopen(fileName, "wb");
     if(!finalFile) {
         die("Failed to create final file '%s'", finalFile);
     }
     for(i=0;i<segmentsNo;i++) {	
-        fname = getPartialFileName(fileName, i);
+        fname = getPartialFileName(i);
 	    FILE *pf=fopen(fname, "rb");
         if(!pf) {
             die("Failed to open partial file %s", fname);
         }
         do {
-            n=fread(buff, 1, SOCKET_BUFFER_SIZE, pf);
-            k=fwrite(buff, 1, n, finalFile);
-            if (k<n) {
+            if((n = fread(buff, 1, SOCKET_BUFFER_SIZE, pf)) < 0) {
+                die("Failed to read bytes from partial file");
+            }
+            if(fwrite(buff, 1, n, finalFile) < n) {
                 die("Failed to write all the bytes from partial file '%s' to the final file", fname);
             }
         } while(n == SOCKET_BUFFER_SIZE);
@@ -292,15 +290,19 @@ void mergePartialFiles(char *fileName,int segmentsNo) {
 int compareFileSize(char *fileName, unsigned long size) {
     struct stat st;
     stat(fileName, &st);
-    
     return st.st_size -  size;
+}
+
+void on_progress (progress_data_t *data) {
+  progress_write(data->holder);
 }
 
 int main(int argv, char *argc[]) { // nume fisier, nr segmente
     ReachedServer *s;
-    int  err, segmentsNo;
-    unsigned long bytesPerSegment, la, lb,i;
+    int  err, segmentsNo, i;
+    unsigned long bytesPerSegment, segmentSize, la, lb;
     char *fileName;
+    progress_t *progress;
 
     if(argv < 3) {
         die("Usage: %s <file_name> <segments_no>", argc[0]);
@@ -331,24 +333,30 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
     printf("%d out of %d servers were reached for file '%s'\n", reachedServerNo, serversNo, fileName);
     
     bytesPerSegment = calculateBytesPerSegment(segmentsNo);
-    printf("%lu   bps\n\n",bytesPerSegment);
 
     for (i=0; i<segmentsNo; i++) {
+        s=reachedServers[i % reachedServerNo];
+        la = bytesPerSegment*i;
+        lb = i == segmentsNo-1 ? s->fileSize : bytesPerSegment*i + bytesPerSegment;
+        segmentSize = i == segmentsNo-1 ? s->fileSize-la : bytesPerSegment;
         if(fork() == 0){
-            s=reachedServers[i % reachedServerNo];
-            la = bytesPerSegment*i;
-            lb = i == segmentsNo-1 ? s->fileSize : bytesPerSegment*i + bytesPerSegment;
-	    printf("%lu   fuck   %lu\n",la,lb);
-            downloadSegment(reachedServers[i % reachedServerNo], fileName, i, la, lb);
+            downloadSegment(s, fileName, i, segmentSize, la, lb);
             exit(0);
         }
-        // downloadSegment(reachedServers[i % reachedServerNo], fileName, i, la, lb);
+        // downloadSegment(s, fileName, i, bytesPerSegment, la, lb);
     }
 
+    progress = progress_new(segmentsNo, 70);
+    progress->fmt = "Downloading: [:bar] :percent :elapsed";
+    progress_on(progress, PROGRESS_EVENT_PROGRESS, on_progress);
+
+    progress_write(progress);
     for(i=0; i<segmentsNo; i++) {
         wait(NULL);
+        progress_tick(progress, 1);
     }
 
+    printf("\nMerging partial files...\n");
     mergePartialFiles(fileName, segmentsNo);
     
     if (compareFileSize(fileName, reachedServers[0]->fileSize) != 0) {

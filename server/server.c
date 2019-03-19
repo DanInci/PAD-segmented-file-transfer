@@ -155,18 +155,12 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
                             current=from;
                             while(current < to) {
                                 howMany = to-current > SOCKET_BUFFER_SIZE ? SOCKET_BUFFER_SIZE : to-current;
-                                printf("enter read\n");
                                 howMany = fread(buffer, 1, howMany, f);
-                                printf("exit read\n");
-                                printf("enter write\n");
                                 write(socketfd, buffer, howMany);
-                                printf("exit write\n");
                                 current += howMany;
-                                printf("%lu / %lu \n", current, to);
                             }
                             fclose(f);
-                            write(socketfd, "\0", sizeof(char));
-                            printf("Served '%s' [%lu, %lu]\n", fileName, from, to);
+                            printf("Served '%s' [%lu, %lu) to  %s:%d\n", q->path, from, to, inet_ntoa(remote_addr.sin_addr), remote_addr.sin_port);
                         }
                         else {
                             sprintf(buffer, "%d\n", -3);
@@ -189,7 +183,7 @@ void process(int socketfd, struct sockaddr_in remote_addr, socklen_t rlen) {
             }
         }
         else if(n < 0) {
-            printf("Socket read error\n");
+            printf("Socket read error: errno %d\n", errno);
             break;
         }
         else {
