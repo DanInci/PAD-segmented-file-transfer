@@ -301,10 +301,6 @@ int compareFileSize(char *fileName, unsigned long size) {
     return st.st_size -  size;
 }
 
-void on_progress (progress_data_t *data) {
-  progress_write(data->holder);
-}
-
 int main(int argv, char *argc[]) { // nume fisier, nr segmente
     ReachedServer *s;
     int  err, segmentsNo, i, secondPass=0;
@@ -342,6 +338,11 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
     
     bytesPerSegment = calculateBytesPerSegment(segmentsNo);
 
+    progress = progress_new(segmentsNo, 50);
+    progress->fmt = "Downloading: [:bar] :percent :elapsed";
+
+    progress_write(progress);
+
     for (i=0; i<segmentsNo; i++) {
         s=reachedServers[i % reachedServerNo];
         if(secondPass == 1) {
@@ -359,14 +360,10 @@ int main(int argv, char *argc[]) { // nume fisier, nr segmente
         // downloadSegment(s, fileName, i, bytesPerSegment, la, lb);
     }
 
-    progress = progress_new(segmentsNo, 70);
-    progress->fmt = "Downloading: [:bar] :percent :elapsed";
-    progress_on(progress, PROGRESS_EVENT_PROGRESS, on_progress);
-
-    progress_write(progress);
     for(i=0; i<segmentsNo; i++) {
         wait(NULL);
         progress_tick(progress, 1);
+        progress_write(progress);
     }
 
     printf("\nMerging partial files...\n");
